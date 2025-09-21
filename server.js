@@ -28,7 +28,7 @@ app.use(limiter);
 
 // CORS configuration
 const corsOptions = {
-  origin: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : ['http://localhost:3000', 'http://localhost:5173' , 'https://bill-g.vercel.app/'], 
+  origin: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : ['http://localhost:3000', 'http://localhost:5173' , 'https://bill-g.vercel.app'], 
   credentials: true,
   optionsSuccessStatus: 200
 };
