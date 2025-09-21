@@ -355,7 +355,7 @@ router.put('/:id', [
   }
 });
 
-// GET /api/bills/stats/dashboard - Get dashboard statistics
+/// GET /api/bills/stats/dashboard - Get dashboard statistics
 router.get('/stats/dashboard', [
   query('startDate').optional().isISO8601().toDate(),
   query('endDate').optional().isISO8601().toDate()
