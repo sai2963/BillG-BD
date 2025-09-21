@@ -1,0 +1,121 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Product {
+  id                    String   @id @default(cuid())
+  title                 String
+  description           String?
+  price                 Float
+  category              String?
+  brand                 String?
+  thumbnail             String?
+  images                String[] @default([])
+  rating                Float    @default(0)
+  stock                 Int      @default(0)
+  tags                  String[] @default([])
+  warrantyInformation   String?
+  shippingInformation   String?
+  availabilityStatus    String   @default("In Stock")
+  returnPolicy          String?
+  minimumOrderQuantity  Int      @default(1)
+  
+  // Relationships
+  billItems BillItem[]
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("products")
+}
+
+model Customer {
+  id          String @id @default(cuid())
+  name        String
+  mobileNumber String
+  email       String?
+  address     String?
+  
+  // Relationships
+  bills Bill[]
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("customers")
+}
+
+model Bill {
+  id              String   @id @default(cuid())
+  billNumber      String   @unique
+  
+  // Customer Info
+  customerId      String
+  customer        Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  
+  // Bill Details
+  totalAmount     Float
+  discountPercent Float    @default(0)
+  discountAmount  Float    @default(0)
+  finalAmount     Float
+  
+  // Payment Info
+  paymentStatus   PaymentStatus @default(PENDING)
+  paymentMethod   PaymentMethod @default(CASH)
+  
+  // Bill Items
+  items BillItem[]
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("bills")
+}
+
+model BillItem {
+  id        String @id @default(cuid())
+  
+  // References
+  billId    String
+  bill      Bill   @relation(fields: [billId], references: [id], onDelete: Cascade)
+  
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  
+  // Item Details
+  quantity    Int
+  unitPrice   Float
+  totalPrice  Float
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+
+  @@map("bill_items")
+}
+
+// Enums
+enum PaymentStatus {
+  PENDING
+  PAID
+  PARTIAL
+  OVERDUE
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  UPI
+  BANK_TRANSFER
+  OTHER
+}
