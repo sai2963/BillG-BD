@@ -17,17 +17,23 @@ const handleValidationErrors = (req, res, next) => {
   next();
 };
 
-// GET /api/customers - Get all customers with pagination
+// GET /api/products - Get all products with pagination and search
 router.get('/', [
   query('page').optional().isInt({ min: 1 }),
   query('limit').optional().isInt({ min: 1, max: 100 }),
-  query('search').optional().trim()
+  query('search').optional().trim(),
+  query('category').optional().trim(),
+  query('sortBy').optional().isIn(['title', 'price', 'stock', 'createdAt']),
+  query('sortOrder').optional().isIn(['asc', 'desc'])
 ], handleValidationErrors, async (req, res) => {
   try {
     const {
       page = 1,
-      limit = 20,
-      search
+      limit = 50,
+      search,
+      category,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
     } = req.query;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -38,44 +44,31 @@ router.get('/', [
     
     if (search) {
       where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { mobileNumber: { contains: search, mode: 'insensitive' } },
-        { email: { contains: search, mode: 'insensitive' } }
+        { title: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
+        { brand: { contains: search, mode: 'insensitive' } }
       ];
     }
-
-    // Get total count
-    const totalCount = await prisma.customer.count({ where });
     
-    // Get customers with bill count
-    const customers = await prisma.customer.findMany({
+    if (category) {
+      where.category = { contains: category, mode: 'insensitive' };
+    }
+
+    // Get total count for pagination
+    const totalCount = await prisma.product.count({ where });
+    
+    // Get products
+    const products = await prisma.product.findMany({
       where,
       skip,
       take,
-      include: {
-        _count: {
-          select: { bills: true }
-        },
-        bills: {
-          select: {
-            finalAmount: true
-          }
-        }
-      },
       orderBy: {
-        createdAt: 'desc'
+        [sortBy]: sortOrder
       }
     });
 
-    // Calculate total spent for each customer
-    const customersWithStats = customers.map(customer => ({
-      ...customer,
-      totalSpent: customer.bills.reduce((sum, bill) => sum + bill.finalAmount, 0),
-      bills: undefined // Remove bills array from response
-    }));
-
     res.json({
-      customers: customersWithStats,
+      products,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -84,205 +77,219 @@ router.get('/', [
       }
     });
   } catch (error) {
-    console.error('Error fetching customers:', error);
+    console.error('Error fetching products:', error);
     res.status(500).json({
-      error: 'Failed to fetch customers',
+      error: 'Failed to fetch products',
       message: error.message
     });
   }
 });
 
-// GET /api/customers/:id - Get single customer with bills
+// GET /api/products/:id - Get single product
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     
-    const customer = await prisma.customer.findUnique({
-      where: { id },
-      include: {
-        bills: {
-          include: {
-            items: {
-              include: {
-                product: {
-                  select: {
-                    title: true,
-                    price: true
-                  }
-                }
-              }
-            }
-          },
-          orderBy: {
-            createdAt: 'desc'
-          }
-        }
-      }
+    const product = await prisma.product.findUnique({
+      where: { id }
     });
 
-    if (!customer) {
+    if (!product) {
       return res.status(404).json({
-        error: 'Customer not found',
-        message: 'The requested customer does not exist'
+        error: 'Product not found',
+        message: 'The requested product does not exist'
       });
     }
 
-    // Calculate customer stats
-    const totalSpent = customer.bills.reduce((sum, bill) => sum + bill.finalAmount, 0);
-    const totalBills = customer.bills.length;
-
-    res.json({
-      customer: {
-        ...customer,
-        stats: {
-          totalSpent,
-          totalBills
-        }
-      }
-    });
+    res.json({ product });
   } catch (error) {
-    console.error('Error fetching customer:', error);
+    console.error('Error fetching product:', error);
     res.status(500).json({
-      error: 'Failed to fetch customer',
+      error: 'Failed to fetch product',
       message: error.message
     });
   }
 });
 
-// POST /api/customers - Create new customer
+// POST /api/products - Create new product
 router.post('/', [
-  body('name').trim().notEmpty().withMessage('Name is required'),
-  body('mobileNumber').trim().notEmpty().withMessage('Mobile number is required'),
-  body('email').optional().isEmail().withMessage('Invalid email format'),
-  body('address').optional().trim()
+  body('title').trim().notEmpty().withMessage('Title is required'),
+  body('price').isFloat({ min: 0 }).withMessage('Price must be a positive number'),
+  body('stock').isInt({ min: 0 }).withMessage('Stock must be a non-negative integer'),
+  body('description').optional().trim(),
+  body('category').optional().trim(),
+  body('brand').optional().trim(),
+  body('thumbnail').optional().isURL().withMessage('Thumbnail must be a valid URL'),
+  body('images').optional().isArray().withMessage('Images must be an array'),
+  body('images.*').optional().isURL().withMessage('Each image must be a valid URL'),
+  body('rating').optional().isFloat({ min: 0, max: 5 }).withMessage('Rating must be between 0 and 5'),
+  body('tags').optional().isArray().withMessage('Tags must be an array'),
+  body('warrantyInformation').optional().trim(),
+  body('shippingInformation').optional().trim(),
+  body('returnPolicy').optional().trim(),
+  body('minimumOrderQuantity').optional().isInt({ min: 1 }).withMessage('Minimum order quantity must be at least 1')
 ], handleValidationErrors, async (req, res) => {
   try {
-    const { name, mobileNumber, email, address } = req.body;
+    const productData = {
+      title: req.body.title,
+      price: parseFloat(req.body.price),
+      stock: parseInt(req.body.stock),
+      description: req.body.description || null,
+      category: req.body.category || null,
+      brand: req.body.brand || null,
+      thumbnail: req.body.thumbnail || null,
+      images: req.body.images || [],
+      rating: req.body.rating ? parseFloat(req.body.rating) : 0,
+      tags: req.body.tags || [],
+      warrantyInformation: req.body.warrantyInformation || null,
+      shippingInformation: req.body.shippingInformation || null,
+      returnPolicy: req.body.returnPolicy || null,
+      minimumOrderQuantity: req.body.minimumOrderQuantity ? parseInt(req.body.minimumOrderQuantity) : 1,
+      availabilityStatus: parseInt(req.body.stock) > 0 ? 'In Stock' : 'Out of Stock'
+    };
 
-    // Check if customer already exists
-    const existingCustomer = await prisma.customer.findFirst({
-      where: {
-        AND: [
-          { name: name },
-          { mobileNumber: mobileNumber }
-        ]
-      }
-    });
-
-    if (existingCustomer) {
-      return res.status(400).json({
-        error: 'Customer already exists',
-        message: 'A customer with this name and mobile number already exists'
-      });
-    }
-
-    const customer = await prisma.customer.create({
-      data: {
-        name,
-        mobileNumber,
-        email: email || null,
-        address: address || null
-      }
+    const product = await prisma.product.create({
+      data: productData
     });
 
     res.status(201).json({
-      message: 'Customer created successfully',
-      customer
+      message: 'Product created successfully',
+      product
     });
   } catch (error) {
-    console.error('Error creating customer:', error);
+    console.error('Error creating product:', error);
     res.status(500).json({
-      error: 'Failed to create customer',
+      error: 'Failed to create product',
       message: error.message
     });
   }
 });
 
-// PUT /api/customers/:id - Update customer
+// PUT /api/products/:id - Update product
 router.put('/:id', [
-  body('name').optional().trim().notEmpty().withMessage('Name cannot be empty'),
-  body('mobileNumber').optional().trim().notEmpty().withMessage('Mobile number cannot be empty'),
-  body('email').optional().isEmail().withMessage('Invalid email format'),
-  body('address').optional().trim()
+  body('title').optional().trim().notEmpty().withMessage('Title cannot be empty'),
+  body('price').optional().isFloat({ min: 0 }).withMessage('Price must be a positive number'),
+  body('stock').optional().isInt({ min: 0 }).withMessage('Stock must be a non-negative integer'),
+  body('description').optional().trim(),
+  body('category').optional().trim(),
+  body('brand').optional().trim(),
+  body('thumbnail').optional().isURL().withMessage('Thumbnail must be a valid URL'),
+  body('images').optional().isArray().withMessage('Images must be an array'),
+  body('rating').optional().isFloat({ min: 0, max: 5 }).withMessage('Rating must be between 0 and 5'),
+  body('tags').optional().isArray().withMessage('Tags must be an array')
 ], handleValidationErrors, async (req, res) => {
   try {
     const { id } = req.params;
     
-    const existingCustomer = await prisma.customer.findUnique({
+    // Check if product exists
+    const existingProduct = await prisma.product.findUnique({
       where: { id }
     });
 
-    if (!existingCustomer) {
+    if (!existingProduct) {
       return res.status(404).json({
-        error: 'Customer not found',
-        message: 'The requested customer does not exist'
+        error: 'Product not found',
+        message: 'The requested product does not exist'
       });
     }
 
+    // Update only provided fields
     const updateData = {};
     Object.keys(req.body).forEach(key => {
       if (req.body[key] !== undefined) {
-        updateData[key] = req.body[key] || null;
+        if (key === 'price') updateData[key] = parseFloat(req.body[key]);
+        else if (key === 'stock' || key === 'minimumOrderQuantity') updateData[key] = parseInt(req.body[key]);
+        else if (key === 'rating') updateData[key] = parseFloat(req.body[key]);
+        else updateData[key] = req.body[key];
       }
     });
 
-    const customer = await prisma.customer.update({
+    // Update availability status based on stock
+    if ('stock' in updateData) {
+      updateData.availabilityStatus = updateData.stock > 0 ? 'In Stock' : 'Out of Stock';
+    }
+
+    const product = await prisma.product.update({
       where: { id },
       data: updateData
     });
 
     res.json({
-      message: 'Customer updated successfully',
-      customer
+      message: 'Product updated successfully',
+      product
     });
   } catch (error) {
-    console.error('Error updating customer:', error);
+    console.error('Error updating product:', error);
     res.status(500).json({
-      error: 'Failed to update customer',
+      error: 'Failed to update product',
       message: error.message
     });
   }
 });
 
-// DELETE /api/customers/:id - Delete customer
+// DELETE /api/products/:id - Delete product
 router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     
-    const existingCustomer = await prisma.customer.findUnique({
-      where: { id },
-      include: {
-        _count: {
-          select: { bills: true }
-        }
-      }
+    // Check if product exists
+    const existingProduct = await prisma.product.findUnique({
+      where: { id }
     });
 
-    if (!existingCustomer) {
+    if (!existingProduct) {
       return res.status(404).json({
-        error: 'Customer not found',
-        message: 'The requested customer does not exist'
+        error: 'Product not found',
+        message: 'The requested product does not exist'
       });
     }
 
-    if (existingCustomer._count.bills > 0) {
-      return res.status(400).json({
-        error: 'Cannot delete customer',
-        message: 'This customer has existing bills and cannot be deleted'
-      });
-    }
-
-    await prisma.customer.delete({
+    await prisma.product.delete({
       where: { id }
     });
 
     res.json({
-      message: 'Customer deleted successfully'
+      message: 'Product deleted successfully'
     });
   } catch (error) {
-    console.error('Error deleting customer:', error);
+    console.error('Error deleting product:', error);
+    
+    if (error.code === 'P2003') {
+      return res.status(400).json({
+        error: 'Cannot delete product',
+        message: 'This product is referenced in existing bills and cannot be deleted'
+      });
+    }
+    
     res.status(500).json({
-      error: 'Failed to delete customer',
+      error: 'Failed to delete product',
+      message: error.message
+    });
+  }
+});
+
+// GET /api/products/categories/list - Get all categories
+router.get('/categories/list', async (req, res) => {
+  try {
+    const categories = await prisma.product.findMany({
+      where: {
+        category: {
+          not: null
+        }
+      },
+      select: {
+        category: true
+      },
+      distinct: ['category']
+    });
+
+    const categoryList = categories.map(item => item.category).filter(Boolean);
+    
+    res.json({ categories: categoryList });
+  } catch (error) {
+    console.error('Error fetching categories:', error);
+    res.status(500).json({
+      error: 'Failed to fetch categories',
       message: error.message
     });
   }

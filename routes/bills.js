@@ -174,6 +174,7 @@ router.get('/:id', async (req, res) => {
 
 // POST /api/bills - Create new bill
 router.post('/', [
+  body('id').trim().notEmpty().withMessage('id is required'),
   body('customerName').trim().notEmpty().withMessage('Customer name is required'),
   body('mobileNumber').trim().notEmpty().withMessage('Mobile number is required'),
   body('email').optional().isEmail().withMessage('Invalid email format'),
@@ -187,6 +188,7 @@ router.post('/', [
 ], handleValidationErrors, async (req, res) => {
   try {
     const {
+      id,
       customerName,
       mobileNumber,
       email,
@@ -267,6 +269,7 @@ router.post('/', [
       // Create bill
       const bill = await tx.bill.create({
         data: {
+          id,
           billNumber,
           customerId: customer.id,
           totalAmount,
