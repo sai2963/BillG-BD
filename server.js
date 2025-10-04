@@ -11,7 +11,7 @@ const prisma = new PrismaClient();
 const productRoutes = require('./routes/products');
 const billRoutes = require('./routes/bills');
 const customerRoutes = require('./routes/customers');
-const subscriptionRoutes = require('./routes/subscriptions');
+const subscriptionRoutes = require('./routes/subscription')
 
 // Import cron jobs
 const { initializeCronJobs } = require('./cron/billing');
