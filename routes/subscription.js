@@ -20,12 +20,53 @@ const handleValidationErrors = (req, res, next) => {
 
 // POST /api/subscriptions - Create new subscription
 router.post('/', [
-  checkSubscription,
+  // Don't use checkSubscription here - user is creating their first subscription
   body('planType').isIn(['MONTHLY', 'ANNUAL', 'CUSTOM']).withMessage('Invalid plan type')
 ], handleValidationErrors, async (req, res) => {
   try {
     const { planType } = req.body;
-    const userId = req.user.id;
+    
+    // Manually verify token and get/create user
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        error: 'Unauthorized',
+        message: 'No authentication token provided'
+      });
+    }
+
+    const token = authHeader.split(' ')[1];
+    
+    let clerkUser;
+    try {
+      const { clerkClient } = require('@clerk/clerk-sdk-node');
+      const session = await clerkClient.verifyToken(token);
+      clerkUser = await clerkClient.users.getUser(session.sub);
+    } catch (error) {
+      return res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Invalid or expired token'
+      });
+    }
+
+    // Get or create user in database
+    let user = await prisma.user.findUnique({
+      where: { clerkId: clerkUser.id }
+    });
+
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          clerkId: clerkUser.id,
+          email: clerkUser.emailAddresses[0].emailAddress,
+          firstName: clerkUser.firstName,
+          lastName: clerkUser.lastName
+        }
+      });
+    }
+
+    const userId = user.id;
 
     // Check if user already has an active subscription
     const existingSubscription = await prisma.subscription.findFirst({
@@ -62,9 +103,8 @@ router.post('/', [
         break;
       
       case 'CUSTOM':
-        amount = 0; // Will be calculated based on usage
-        endDate = null; // No expiry for custom plan
-        // Set next billing to 11th of next month
+        amount = 0;
+        endDate = null;
         nextBillingDate = new Date(startDate);
         nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
         nextBillingDate.setDate(11);
@@ -98,7 +138,6 @@ router.post('/', [
     });
   }
 });
-
 // GET /api/subscriptions/current - Get current user's active subscription
 router.get('/current', checkSubscription, async (req, res) => {
   try {
