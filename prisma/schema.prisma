@@ -63,6 +63,10 @@ model Bill {
   customerId      String
   customer        Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
   
+  // User Association (for subscription tracking)
+  userId          String?
+  user            User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
   // Bill Details
   totalAmount     Float
   discountPercent Float    @default(0)
@@ -104,7 +108,107 @@ model BillItem {
   @@map("bill_items")
 }
 
-// Enums
+// ==================== SUBSCRIPTION MODELS ====================
+
+model User {
+  id                String   @id @default(cuid())
+  clerkId           String   @unique
+  email             String   @unique
+  firstName         String?
+  lastName          String?
+  
+  // Relationships
+  subscriptions     Subscription[]
+  bills             Bill[]
+  usageRecords      UsageRecord[]
+  subscriptionBills SubscriptionBill[]
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+model Subscription {
+  id            String            @id @default(cuid())
+  userId        String
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Subscription Details
+  planType      SubscriptionPlan
+  status        SubscriptionStatus @default(ACTIVE)
+  
+  // Billing
+  amount        Float
+  startDate     DateTime          @default(now())
+  endDate       DateTime?
+  nextBillingDate DateTime?
+  
+  // For Custom Plan
+  billsGenerated Int              @default(0)
+  
+  // Payment tracking
+  lastPaymentDate DateTime?
+  lastPaymentAmount Float?
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("subscriptions")
+}
+
+model UsageRecord {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  billId      String
+  
+  // For billing calculation
+  month       Int      // 1-12
+  year        Int
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+
+  @@index([userId, month, year])
+  @@map("usage_records")
+}
+
+model SubscriptionBill {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Bill Details
+  billNumber      String   @unique
+  amount          Float
+  planType        SubscriptionPlan
+  
+  // Billing Period
+  billingMonth    Int      // 1-12
+  billingYear     Int
+  
+  // For Custom Plan
+  billsCount      Int?     // Number of bills generated in this period
+  
+  // Payment Status
+  status          PaymentStatus @default(PENDING)
+  dueDate         DateTime
+  paidDate        DateTime?
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, billingMonth, billingYear])
+  @@map("subscription_bills")
+}
+
+// ==================== ENUMS ====================
+
 enum PaymentStatus {
   PENDING
   PAID
@@ -118,4 +222,17 @@ enum PaymentMethod {
   UPI
   BANK_TRANSFER
   OTHER
+}
+
+enum SubscriptionPlan {
+  MONTHLY
+  ANNUAL
+  CUSTOM
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+  SUSPENDED
 }

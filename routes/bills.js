@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const { PrismaClient } = require('@prisma/client');
+const { checkSubscription, trackBillUsage } = require('../middleware/subscription');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -26,7 +27,6 @@ const generateBillNumber = async () => {
   
   const datePrefix = `BILL${year}${month}${day}`;
   
-  // Find the last bill of today
   const lastBill = await prisma.bill.findFirst({
     where: {
       billNumber: {
@@ -47,8 +47,8 @@ const generateBillNumber = async () => {
   return `${datePrefix}${String(sequence).padStart(4, '0')}`;
 };
 
-// GET /api/bills - Get all bills with pagination
-router.get('/', [
+// GET /api/bills - Get all bills with pagination (Protected)
+router.get('/', checkSubscription, [
   query('page').optional().isInt({ min: 1 }),
   query('limit').optional().isInt({ min: 1, max: 100 }),
   query('search').optional().trim(),
@@ -69,8 +69,10 @@ router.get('/', [
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = parseInt(limit);
 
-    // Build where clause
-    const where = {};
+    // Build where clause - filter by userId
+    const where = {
+      userId: req.user.id
+    };
     
     if (search) {
       where.OR = [
@@ -99,10 +101,8 @@ router.get('/', [
       };
     }
 
-    // Get total count
     const totalCount = await prisma.bill.count({ where });
     
-    // Get bills with customer and items
     const bills = await prisma.bill.findMany({
       where,
       skip,
@@ -138,13 +138,16 @@ router.get('/', [
   }
 });
 
-// GET /api/bills/:id - Get single bill
-router.get('/:id', async (req, res) => {
+// GET /api/bills/:id - Get single bill (Protected)
+router.get('/:id', checkSubscription, async (req, res) => {
   try {
     const { id } = req.params;
     
-    const bill = await prisma.bill.findUnique({
-      where: { id },
+    const bill = await prisma.bill.findFirst({
+      where: { 
+        id,
+        userId: req.user.id
+      },
       include: {
         customer: true,
         items: {
@@ -172,8 +175,8 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// POST /api/bills - Create new bill
-router.post('/', [
+// POST /api/bills - Create new bill (Protected + Track Usage)
+router.post('/', checkSubscription, trackBillUsage, [
   body('id').trim().notEmpty().withMessage('id is required'),
   body('customerName').trim().notEmpty().withMessage('Customer name is required'),
   body('mobileNumber').trim().notEmpty().withMessage('Mobile number is required'),
@@ -199,9 +202,7 @@ router.post('/', [
       paymentStatus = 'PENDING'
     } = req.body;
 
-    // Start transaction
     const result = await prisma.$transaction(async (tx) => {
-      // Check if customer exists, if not create new one
       let customer = await tx.customer.findFirst({
         where: {
           AND: [
@@ -222,7 +223,6 @@ router.post('/', [
         });
       }
 
-      // Validate products and calculate amounts
       let totalAmount = 0;
       const billItems = [];
 
@@ -249,7 +249,6 @@ router.post('/', [
           totalPrice: itemTotal
         });
 
-        // Update product stock
         await tx.product.update({
           where: { id: item.productId },
           data: {
@@ -259,19 +258,16 @@ router.post('/', [
         });
       }
 
-      // Calculate final amounts
       const discountAmount = (totalAmount * discountPercent) / 100;
       const finalAmount = totalAmount - discountAmount;
-
-      // Generate bill number
       const billNumber = await generateBillNumber();
 
-      // Create bill
       const bill = await tx.bill.create({
         data: {
           id,
           billNumber,
           customerId: customer.id,
+          userId: req.user.id,
           totalAmount,
           discountPercent,
           discountAmount,
@@ -308,8 +304,8 @@ router.post('/', [
   }
 });
 
-// PUT /api/bills/:id - Update bill (mainly payment status)
-router.put('/:id', [
+// PUT /api/bills/:id - Update bill (Protected)
+router.put('/:id', checkSubscription, [
   body('paymentStatus').optional().isIn(['PENDING', 'PAID', 'PARTIAL', 'OVERDUE']),
   body('paymentMethod').optional().isIn(['CASH', 'CARD', 'UPI', 'BANK_TRANSFER', 'OTHER'])
 ], handleValidationErrors, async (req, res) => {
@@ -317,8 +313,11 @@ router.put('/:id', [
     const { id } = req.params;
     const { paymentStatus, paymentMethod } = req.body;
     
-    const existingBill = await prisma.bill.findUnique({
-      where: { id }
+    const existingBill = await prisma.bill.findFirst({
+      where: { 
+        id,
+        userId: req.user.id
+      }
     });
 
     if (!existingBill) {
@@ -358,23 +357,24 @@ router.put('/:id', [
   }
 });
 
-/// GET /api/bills/stats/dashboard - Get dashboard statistics
-router.get('/stats/dashboard', [
+// GET /api/bills/stats/dashboard - Get dashboard statistics (Protected)
+router.get('/stats/dashboard', checkSubscription, [
   query('startDate').optional().isISO8601().toDate(),
   query('endDate').optional().isISO8601().toDate()
 ], handleValidationErrors, async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     
-    // Date filter
-    const dateFilter = {};
+    const dateFilter = {
+      userId: req.user.id
+    };
+    
     if (startDate && endDate) {
       dateFilter.createdAt = {
         gte: new Date(startDate),
         lte: new Date(endDate)
       };
     } else {
-      // Default to current month
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
@@ -384,7 +384,6 @@ router.get('/stats/dashboard', [
       };
     }
 
-    // Get statistics
     const [
       totalBills,
       totalRevenue,
@@ -393,91 +392,37 @@ router.get('/stats/dashboard', [
       todayBills,
       todayRevenue
     ] = await Promise.all([
-      // Total bills in period
-      prisma.bill.count({
-        where: dateFilter
-      }),
-      
-      // Total revenue in period
+      prisma.bill.count({ where: dateFilter }),
       prisma.bill.aggregate({
         where: dateFilter,
-        _sum: {
-          finalAmount: true
-        }
+        _sum: { finalAmount: true }
       }),
-      
-      // Paid bills count
+      prisma.bill.count({
+        where: { ...dateFilter, paymentStatus: 'PAID' }
+      }),
+      prisma.bill.count({
+        where: { ...dateFilter, paymentStatus: 'PENDING' }
+      }),
       prisma.bill.count({
         where: {
-          ...dateFilter,
-          paymentStatus: 'PAID'
-        }
-      }),
-      
-      // Pending bills count
-      prisma.bill.count({
-        where: {
-          ...dateFilter,
-          paymentStatus: 'PENDING'
-        }
-      }),
-      
-      // Today's bills
-      prisma.bill.count({
-        where: {
+          userId: req.user.id,
           createdAt: {
             gte: new Date(new Date().setHours(0, 0, 0, 0)),
             lte: new Date(new Date().setHours(23, 59, 59, 999))
           }
         }
       }),
-      
-      // Today's revenue
       prisma.bill.aggregate({
         where: {
+          userId: req.user.id,
           createdAt: {
             gte: new Date(new Date().setHours(0, 0, 0, 0)),
             lte: new Date(new Date().setHours(23, 59, 59, 999))
           }
         },
-        _sum: {
-          finalAmount: true
-        }
+        _sum: { finalAmount: true }
       })
     ]);
-
-    // Get top products
-    const topProducts = await prisma.billItem.groupBy({
-      by: ['productId'],
-      where: {
-        bill: dateFilter
-      },
-      _sum: {
-        quantity: true,
-        totalPrice: true
-      },
-      orderBy: {
-        _sum: {
-          quantity: 'desc'
-        }
-      },
-      take: 5
-    });
-
-    // Get product details for top products
-    const topProductsWithDetails = await Promise.all(
-      topProducts.map(async (item) => {
-        const product = await prisma.product.findUnique({
-          where: { id: item.productId },
-          select: { title: true, price: true }
-        });
-        return {
-          product,
-          quantitySold: item._sum.quantity,
-          revenue: item._sum.totalPrice
-        };
-      })
-    );
 
     res.json({
       stats: {
@@ -487,8 +432,7 @@ router.get('/stats/dashboard', [
         pendingBills,
         todayBills,
         todayRevenue: todayRevenue._sum.finalAmount || 0
-      },
-      topProducts: topProductsWithDetails
+      }
     });
   } catch (error) {
     console.error('Error fetching dashboard stats:', error);

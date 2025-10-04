@@ -4,7 +4,10 @@ const { PrismaClient } = require('@prisma/client');
 
 const router = express.Router();
 const prisma = new PrismaClient();
+const { checkSubscription } = require('../middleware/subscription');
 
+// Protect all routes
+router.use(checkSubscription);
 // Validation middleware
 const handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
