@@ -1,7 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { PrismaClient } = require('@prisma/client');
-const { checkSubscription } = require('../middleware/subscription');
+const { clerkClient } = require('@clerk/clerk-sdk-node');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -18,39 +18,21 @@ const handleValidationErrors = (req, res, next) => {
   next();
 };
 
-// POST /api/subscriptions - Create new subscription
-router.post('/', [
-  // Don't use checkSubscription here - user is creating their first subscription
-  body('planType').isIn(['MONTHLY', 'ANNUAL', 'CUSTOM']).withMessage('Invalid plan type')
-], handleValidationErrors, async (req, res) => {
+// Helper function to get user from token
+const getUserFromToken = async (req) => {
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    throw new Error('NO_TOKEN');
+  }
+
+  const token = authHeader.split(' ')[1];
+  
   try {
-    const { planType } = req.body;
+    // Verify the token with Clerk - clerkClient is already initialized
+    const decoded = await clerkClient.verifyToken(token);
+    const clerkUser = await clerkClient.users.getUser(decoded.sub);
     
-    // Manually verify token and get/create user
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        error: 'Unauthorized',
-        message: 'No authentication token provided'
-      });
-    }
-
-    const token = authHeader.split(' ')[1];
-    
-    let clerkUser;
-    try {
-      const { clerkClient } = require('@clerk/clerk-sdk-node');
-      const session = await clerkClient.verifyToken(token);
-      clerkUser = await clerkClient.users.getUser(session.sub);
-    } catch (error) {
-      return res.status(401).json({
-        error: 'Unauthorized',
-        message: 'Invalid or expired token'
-      });
-    }
-
-    // Get or create user in database
     let user = await prisma.user.findUnique({
       where: { clerkId: clerkUser.id }
     });
@@ -66,6 +48,22 @@ router.post('/', [
       });
     }
 
+    return user;
+  } catch (error) {
+    console.error('Token verification error:', error);
+    throw new Error('INVALID_TOKEN');
+  }
+};
+
+// POST /api/subscriptions - Create new subscription
+router.post('/', [
+  body('planType').isIn(['MONTHLY', 'ANNUAL', 'CUSTOM']).withMessage('Invalid plan type')
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { planType } = req.body;
+    
+    // Get user from token
+    const user = await getUserFromToken(req);
     const userId = user.id;
 
     // Check if user already has an active subscription
@@ -110,6 +108,12 @@ router.post('/', [
         nextBillingDate.setDate(11);
         nextBillingDate.setHours(0, 0, 0, 0);
         break;
+      
+      default:
+        return res.status(400).json({
+          error: 'Invalid plan type',
+          message: 'Plan type must be MONTHLY, ANNUAL, or CUSTOM'
+        });
     }
 
     // Create subscription
@@ -132,20 +136,36 @@ router.post('/', [
     });
   } catch (error) {
     console.error('Error creating subscription:', error);
+    
+    if (error.message === 'NO_TOKEN') {
+      return res.status(401).json({
+        error: 'Unauthorized',
+        message: 'No authentication token provided'
+      });
+    }
+    
+    if (error.message === 'INVALID_TOKEN') {
+      return res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Invalid or expired token'
+      });
+    }
+    
     res.status(500).json({
       error: 'Failed to create subscription',
       message: error.message
     });
   }
 });
-// GET /api/subscriptions/current - Get current user's active subscription
-router.get('/current', checkSubscription, async (req, res) => {
+
+// GET /api/subscriptions/current - Get current subscription (no auth required initially)
+router.get('/current', async (req, res) => {
   try {
-    const userId = req.user.id;
+    const user = await getUserFromToken(req);
 
     const subscription = await prisma.subscription.findFirst({
       where: {
-        userId,
+        userId: user.id,
         status: 'ACTIVE'
       },
       orderBy: {
@@ -169,7 +189,7 @@ router.get('/current', checkSubscription, async (req, res) => {
 
       const usageCount = await prisma.usageRecord.count({
         where: {
-          userId,
+          userId: user.id,
           month,
           year
         }
@@ -189,6 +209,14 @@ router.get('/current', checkSubscription, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching subscription:', error);
+    
+    if (error.message === 'NO_TOKEN' || error.message === 'INVALID_TOKEN') {
+      return res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Authentication required'
+      });
+    }
+    
     res.status(500).json({
       error: 'Failed to fetch subscription',
       message: error.message
@@ -197,12 +225,12 @@ router.get('/current', checkSubscription, async (req, res) => {
 });
 
 // GET /api/subscriptions/bills - Get subscription billing history
-router.get('/bills', checkSubscription, async (req, res) => {
+router.get('/bills', async (req, res) => {
   try {
-    const userId = req.user.id;
+    const user = await getUserFromToken(req);
 
     const bills = await prisma.subscriptionBill.findMany({
-      where: { userId },
+      where: { userId: user.id },
       orderBy: {
         createdAt: 'desc'
       }
@@ -219,13 +247,13 @@ router.get('/bills', checkSubscription, async (req, res) => {
 });
 
 // POST /api/subscriptions/cancel - Cancel current subscription
-router.post('/cancel', checkSubscription, async (req, res) => {
+router.post('/cancel', async (req, res) => {
   try {
-    const userId = req.user.id;
+    const user = await getUserFromToken(req);
 
     const subscription = await prisma.subscription.findFirst({
       where: {
-        userId,
+        userId: user.id,
         status: 'ACTIVE'
       }
     });
@@ -240,7 +268,7 @@ router.post('/cancel', checkSubscription, async (req, res) => {
     // Check for unpaid bills
     const unpaidBills = await prisma.subscriptionBill.count({
       where: {
-        userId,
+        userId: user.id,
         status: 'PENDING'
       }
     });
@@ -275,19 +303,26 @@ router.post('/cancel', checkSubscription, async (req, res) => {
 });
 
 // GET /api/subscriptions/stats - Get usage statistics
-router.get('/stats', checkSubscription, async (req, res) => {
+router.get('/stats', async (req, res) => {
   try {
-    const userId = req.user.id;
+    const user = await getUserFromToken(req);
     const now = new Date();
+
+    const subscription = await prisma.subscription.findFirst({
+      where: {
+        userId: user.id,
+        status: 'ACTIVE'
+      }
+    });
 
     // Get all-time stats
     const [totalBills, totalSpent] = await Promise.all([
       prisma.bill.count({
-        where: { userId }
+        where: { userId: user.id }
       }),
       prisma.subscriptionBill.aggregate({
         where: {
-          userId,
+          userId: user.id,
           status: 'PAID'
         },
         _sum: {
@@ -302,7 +337,7 @@ router.get('/stats', checkSubscription, async (req, res) => {
 
     const monthlyBills = await prisma.usageRecord.count({
       where: {
-        userId,
+        userId: user.id,
         month,
         year
       }
@@ -310,7 +345,7 @@ router.get('/stats', checkSubscription, async (req, res) => {
 
     // Get last 6 months usage for custom plan users
     const monthlyUsage = [];
-    if (req.subscription.planType === 'CUSTOM') {
+    if (subscription && subscription.planType === 'CUSTOM') {
       for (let i = 5; i >= 0; i--) {
         const d = new Date();
         d.setMonth(d.getMonth() - i);
@@ -319,7 +354,7 @@ router.get('/stats', checkSubscription, async (req, res) => {
 
         const count = await prisma.usageRecord.count({
           where: {
-            userId,
+            userId: user.id,
             month: m,
             year: y
           }
@@ -341,7 +376,7 @@ router.get('/stats', checkSubscription, async (req, res) => {
       },
       currentMonth: {
         billsGenerated: monthlyBills,
-        estimatedCost: req.subscription.planType === 'CUSTOM' ? monthlyBills * 1 : 0
+        estimatedCost: subscription && subscription.planType === 'CUSTOM' ? monthlyBills * 1 : 0
       },
       monthlyUsage
     });
