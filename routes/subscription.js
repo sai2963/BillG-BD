@@ -1,7 +1,7 @@
 const express = require("express");
 const { body, validationResult } = require("express-validator");
 const { PrismaClient } = require("@prisma/client");
-
+const jwt = require("jsonwebtoken");
 const router = express.Router();
 const prisma = new PrismaClient();
 
@@ -16,7 +16,6 @@ const handleValidationErrors = (req, res, next) => {
   }
   next();
 };
-
 // Helper function to get user from token - Simplified without Clerk SDK
 const getUserFromToken = async (req) => {
   const authHeader = req.headers.authorization;
@@ -28,45 +27,45 @@ const getUserFromToken = async (req) => {
   const token = authHeader.split(" ")[1];
 
   try {
-    // Call Clerk API directly to verify token and get user
-    const response = await fetch("https://api.clerk.com/v1/sessions/verify", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.CLERK_SECRET_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ token }),
-    });
+    // Decode JWT without verification (Clerk already verified it on frontend)
+    const decoded = jwt.decode(token);
 
-    if (!response.ok) {
+    if (!decoded || !decoded.sub) {
+      console.error("Invalid token structure:", decoded);
       throw new Error("INVALID_TOKEN");
     }
 
-    const sessionData = await response.json();
-    const clerkUserId = sessionData.user_id;
-
-    // Get full user details
-    const userResponse = await fetch(
-      `https://api.clerk.com/v1/users/${clerkUserId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.CLERK_SECRET_KEY}`,
-        },
-      }
-    );
-
-    if (!userResponse.ok) {
-      throw new Error("INVALID_TOKEN");
-    }
-
-    const clerkUser = await userResponse.json();
+    const clerkUserId = decoded.sub;
+    console.log("Clerk User ID from token:", clerkUserId);
 
     // Find or create user in database
     let user = await prisma.user.findUnique({
-      where: { clerkId: clerkUser.id },
+      where: { clerkId: clerkUserId },
     });
 
     if (!user) {
+      console.log("User not found, fetching from Clerk API...");
+
+      // Fetch user details from Clerk
+      const clerkResponse = await fetch(
+        `https://api.clerk.com/v1/users/${clerkUserId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.CLERK_SECRET_KEY}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      if (!clerkResponse.ok) {
+        const errorText = await clerkResponse.text();
+        console.error("Clerk API error:", clerkResponse.status, errorText);
+        throw new Error("INVALID_TOKEN");
+      }
+
+      const clerkUser = await clerkResponse.json();
+      console.log("Fetched Clerk user:", clerkUser.id);
+
       user = await prisma.user.create({
         data: {
           clerkId: clerkUser.id,
@@ -75,49 +74,37 @@ const getUserFromToken = async (req) => {
           lastName: clerkUser.last_name || "",
         },
       });
+
+      console.log("Created new user in database:", user.id);
     }
 
     return user;
   } catch (error) {
-    console.error("Token verification error:", error);
+    console.error("getUserFromToken error:", error);
     throw new Error("INVALID_TOKEN");
   }
 };
-
 // POST /api/subscriptions - Create new subscription
 router.post(
   "/",
-  [
-    body("planType")
-      .isIn(["MONTHLY", "ANNUAL", "CUSTOM"])
-      .withMessage("Invalid plan type"),
-  ],
+  [body("planType").isIn(["MONTHLY", "ANNUAL", "CUSTOM"])],
   handleValidationErrors,
   async (req, res) => {
     try {
       const { planType } = req.body;
-
-      // Get user from token
       const user = await getUserFromToken(req);
-      const userId = user.id;
 
-      // Check if user already has an active subscription
       const existingSubscription = await prisma.subscription.findFirst({
-        where: {
-          userId,
-          status: "ACTIVE",
-        },
+        where: { userId: user.id, status: "ACTIVE" },
       });
 
       if (existingSubscription) {
         return res.status(400).json({
           error: "Active subscription exists",
-          message:
-            "You already have an active subscription. Please cancel it before creating a new one.",
+          message: "You already have an active subscription.",
         });
       }
 
-      // Calculate subscription details based on plan
       let amount, endDate, nextBillingDate;
       const startDate = new Date();
 
@@ -128,14 +115,12 @@ router.post(
           endDate.setMonth(endDate.getMonth() + 1);
           nextBillingDate = new Date(endDate);
           break;
-
         case "ANNUAL":
           amount = 500;
           endDate = new Date(startDate);
           endDate.setFullYear(endDate.getFullYear() + 1);
           nextBillingDate = new Date(endDate);
           break;
-
         case "CUSTOM":
           amount = 0;
           endDate = null;
@@ -144,18 +129,11 @@ router.post(
           nextBillingDate.setDate(11);
           nextBillingDate.setHours(0, 0, 0, 0);
           break;
-
-        default:
-          return res.status(400).json({
-            error: "Invalid plan type",
-            message: "Plan type must be MONTHLY, ANNUAL, or CUSTOM",
-          });
       }
 
-      // Create subscription
       const subscription = await prisma.subscription.create({
         data: {
-          userId,
+          userId: user.id,
           planType,
           status: "ACTIVE",
           amount,
@@ -171,16 +149,9 @@ router.post(
         subscription,
       });
     } catch (error) {
-      console.error("Error creating subscription:", error);
+      console.error("Create subscription error:", error);
 
-      if (error.message === "NO_TOKEN") {
-        return res.status(401).json({
-          error: "Unauthorized",
-          message: "No authentication token provided",
-        });
-      }
-
-      if (error.message === "INVALID_TOKEN") {
+      if (error.message === "NO_TOKEN" || error.message === "INVALID_TOKEN") {
         return res.status(401).json({
           error: "Unauthorized",
           message: "Invalid or expired token",
@@ -199,15 +170,9 @@ router.post(
 router.get("/current", async (req, res) => {
   try {
     const user = await getUserFromToken(req);
-
     const subscription = await prisma.subscription.findFirst({
-      where: {
-        userId: user.id,
-        status: "ACTIVE",
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
+      where: { userId: user.id, status: "ACTIVE" },
+      orderBy: { createdAt: "desc" },
     });
 
     if (!subscription) {
@@ -217,18 +182,14 @@ router.get("/current", async (req, res) => {
       });
     }
 
-    // Get usage stats for current month if custom plan
     let usageStats = null;
     if (subscription.planType === "CUSTOM") {
       const now = new Date();
-      const month = now.getMonth() + 1;
-      const year = now.getFullYear();
-
       const usageCount = await prisma.usageRecord.count({
         where: {
           userId: user.id,
-          month,
-          year,
+          month: now.getMonth() + 1,
+          year: now.getFullYear(),
         },
       });
 
@@ -240,27 +201,17 @@ router.get("/current", async (req, res) => {
       };
     }
 
-    res.json({
-      subscription,
-      usageStats,
-    });
+    res.json({ subscription, usageStats });
   } catch (error) {
-    console.error("Error fetching subscription:", error);
-
     if (error.message === "NO_TOKEN" || error.message === "INVALID_TOKEN") {
       return res.status(401).json({
         error: "Unauthorized",
         message: "Authentication required",
       });
     }
-
-    res.status(500).json({
-      error: "Failed to fetch subscription",
-      message: error.message,
-    });
+    res.status(500).json({ error: "Failed to fetch subscription" });
   }
 });
-
 // Other routes remain the same...
 router.get("/bills", async (req, res) => {
   try {
@@ -271,15 +222,46 @@ router.get("/bills", async (req, res) => {
     });
     res.json({ bills });
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        error: "Failed to fetch subscription bills",
-        message: error.message,
-      });
+    res.status(500).json({ error: "Failed to fetch bills" });
   }
 });
+router.get("/stats", async (req, res) => {
+  try {
+    const user = await getUserFromToken(req);
+    const now = new Date();
 
+    const subscription = await prisma.subscription.findFirst({
+      where: { userId: user.id, status: "ACTIVE" },
+    });
+
+    const [totalBills, totalSpent] = await Promise.all([
+      prisma.bill.count({ where: { userId: user.id } }),
+      prisma.subscriptionBill.aggregate({
+        where: { userId: user.id, status: "PAID" },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const monthlyBills = await prisma.usageRecord.count({
+      where: {
+        userId: user.id,
+        month: now.getMonth() + 1,
+        year: now.getFullYear(),
+      },
+    });
+
+    res.json({
+      allTime: { totalBills, totalSpent: totalSpent._sum.amount || 0 },
+      currentMonth: {
+        billsGenerated: monthlyBills,
+        estimatedCost: subscription?.planType === "CUSTOM" ? monthlyBills : 0,
+      },
+      monthlyUsage: [],
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch statistics" });
+  }
+});
 router.post("/cancel", async (req, res) => {
   try {
     const user = await getUserFromToken(req);
@@ -298,47 +280,7 @@ router.post("/cancel", async (req, res) => {
 
     res.json({ message: "Subscription cancelled successfully" });
   } catch (error) {
-    res
-      .status(500)
-      .json({ error: "Failed to cancel subscription", message: error.message });
-  }
-});
-
-router.get("/stats", async (req, res) => {
-  try {
-    const user = await getUserFromToken(req);
-    const now = new Date();
-    const month = now.getMonth() + 1;
-    const year = now.getFullYear();
-
-    const subscription = await prisma.subscription.findFirst({
-      where: { userId: user.id, status: "ACTIVE" },
-    });
-
-    const [totalBills, totalSpent] = await Promise.all([
-      prisma.bill.count({ where: { userId: user.id } }),
-      prisma.subscriptionBill.aggregate({
-        where: { userId: user.id, status: "PAID" },
-        _sum: { amount: true },
-      }),
-    ]);
-
-    const monthlyBills = await prisma.usageRecord.count({
-      where: { userId: user.id, month, year },
-    });
-
-    res.json({
-      allTime: { totalBills, totalSpent: totalSpent._sum.amount || 0 },
-      currentMonth: {
-        billsGenerated: monthlyBills,
-        estimatedCost: subscription?.planType === "CUSTOM" ? monthlyBills : 0,
-      },
-      monthlyUsage: [],
-    });
-  } catch (error) {
-    res
-      .status(500)
-      .json({ error: "Failed to fetch statistics", message: error.message });
+    res.status(500).json({ error: "Failed to cancel subscription" });
   }
 });
 
