@@ -1,7 +1,8 @@
 const express = require("express");
 const { body, validationResult } = require("express-validator");
 const { PrismaClient } = require("@prisma/client");
-const jwt = require("jsonwebtoken");
+const { clerkClient } = require("@clerk/clerk-sdk-node");
+
 const router = express.Router();
 const prisma = new PrismaClient();
 
@@ -16,7 +17,8 @@ const handleValidationErrors = (req, res, next) => {
   }
   next();
 };
-// Helper function to get user from token - Simplified without Clerk SDK
+
+// Helper function to get user from token - FIXED VERSION
 const getUserFromToken = async (req) => {
   const authHeader = req.headers.authorization;
 
@@ -27,16 +29,11 @@ const getUserFromToken = async (req) => {
   const token = authHeader.split(" ")[1];
 
   try {
-    // Decode JWT without verification (Clerk already verified it on frontend)
-    const decoded = jwt.decode(token);
+    // Verify the session token with Clerk
+    const verifiedToken = await clerkClient.verifyToken(token);
+    const clerkUserId = verifiedToken.sub;
 
-    if (!decoded || !decoded.sub) {
-      console.error("Invalid token structure:", decoded);
-      throw new Error("INVALID_TOKEN");
-    }
-
-    const clerkUserId = decoded.sub;
-    console.log("Clerk User ID from token:", clerkUserId);
+    console.log("Verified Clerk User ID:", clerkUserId);
 
     // Find or create user in database
     let user = await prisma.user.findUnique({
@@ -44,34 +41,18 @@ const getUserFromToken = async (req) => {
     });
 
     if (!user) {
-      console.log("User not found, fetching from Clerk API...");
+      console.log("User not found in database, fetching from Clerk...");
 
-      // Fetch user details from Clerk
-      const clerkResponse = await fetch(
-        `https://api.clerk.com/v1/users/${clerkUserId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.CLERK_SECRET_KEY}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
-      if (!clerkResponse.ok) {
-        const errorText = await clerkResponse.text();
-        console.error("Clerk API error:", clerkResponse.status, errorText);
-        throw new Error("INVALID_TOKEN");
-      }
-
-      const clerkUser = await clerkResponse.json();
+      // Get user details from Clerk
+      const clerkUser = await clerkClient.users.getUser(clerkUserId);
       console.log("Fetched Clerk user:", clerkUser.id);
 
       user = await prisma.user.create({
         data: {
           clerkId: clerkUser.id,
-          email: clerkUser.email_addresses[0].email_address,
-          firstName: clerkUser.first_name || "",
-          lastName: clerkUser.last_name || "",
+          email: clerkUser.emailAddresses[0].emailAddress,
+          firstName: clerkUser.firstName || "",
+          lastName: clerkUser.lastName || "",
         },
       });
 
@@ -80,10 +61,11 @@ const getUserFromToken = async (req) => {
 
     return user;
   } catch (error) {
-    console.error("getUserFromToken error:", error);
+    console.error("getUserFromToken error:", error.message);
     throw new Error("INVALID_TOKEN");
   }
 };
+
 // POST /api/subscriptions - Create new subscription
 router.post(
   "/",
@@ -92,8 +74,12 @@ router.post(
   async (req, res) => {
     try {
       const { planType } = req.body;
-      const user = await getUserFromToken(req);
+      console.log("Creating subscription for plan:", planType);
 
+      const user = await getUserFromToken(req);
+      console.log("User authenticated:", user.id);
+
+      // Check for existing active subscription
       const existingSubscription = await prisma.subscription.findFirst({
         where: { userId: user.id, status: "ACTIVE" },
       });
@@ -144,6 +130,8 @@ router.post(
         },
       });
 
+      console.log("Subscription created successfully:", subscription.id);
+
       res.status(201).json({
         message: "Subscription created successfully",
         subscription,
@@ -151,10 +139,19 @@ router.post(
     } catch (error) {
       console.error("Create subscription error:", error);
 
-      if (error.message === "NO_TOKEN" || error.message === "INVALID_TOKEN") {
+      if (error.message === "NO_TOKEN") {
+        return res.status(401).json({
+          error: "Unauthorized",
+          message: "No authentication token provided",
+          code: "NO_TOKEN"
+        });
+      }
+
+      if (error.message === "INVALID_TOKEN") {
         return res.status(401).json({
           error: "Unauthorized",
           message: "Invalid or expired token",
+          code: "INVALID_TOKEN"
         });
       }
 
@@ -170,6 +167,7 @@ router.post(
 router.get("/current", async (req, res) => {
   try {
     const user = await getUserFromToken(req);
+    
     const subscription = await prisma.subscription.findFirst({
       where: { userId: user.id, status: "ACTIVE" },
       orderBy: { createdAt: "desc" },
@@ -203,28 +201,51 @@ router.get("/current", async (req, res) => {
 
     res.json({ subscription, usageStats });
   } catch (error) {
+    console.error("Get subscription error:", error);
+    
     if (error.message === "NO_TOKEN" || error.message === "INVALID_TOKEN") {
       return res.status(401).json({
         error: "Unauthorized",
         message: "Authentication required",
       });
     }
-    res.status(500).json({ error: "Failed to fetch subscription" });
+    
+    res.status(500).json({ 
+      error: "Failed to fetch subscription",
+      message: error.message 
+    });
   }
 });
-// Other routes remain the same...
+
+// GET /api/subscriptions/bills - Get subscription bills
 router.get("/bills", async (req, res) => {
   try {
     const user = await getUserFromToken(req);
+    
     const bills = await prisma.subscriptionBill.findMany({
       where: { userId: user.id },
       orderBy: { createdAt: "desc" },
     });
+    
     res.json({ bills });
   } catch (error) {
-    res.status(500).json({ error: "Failed to fetch bills" });
+    console.error("Get bills error:", error);
+    
+    if (error.message === "NO_TOKEN" || error.message === "INVALID_TOKEN") {
+      return res.status(401).json({
+        error: "Unauthorized",
+        message: "Authentication required",
+      });
+    }
+    
+    res.status(500).json({ 
+      error: "Failed to fetch bills",
+      message: error.message 
+    });
   }
 });
+
+// GET /api/subscriptions/stats - Get usage statistics
 router.get("/stats", async (req, res) => {
   try {
     const user = await getUserFromToken(req);
@@ -251,7 +272,10 @@ router.get("/stats", async (req, res) => {
     });
 
     res.json({
-      allTime: { totalBills, totalSpent: totalSpent._sum.amount || 0 },
+      allTime: { 
+        totalBills, 
+        totalSpent: totalSpent._sum.amount || 0 
+      },
       currentMonth: {
         billsGenerated: monthlyBills,
         estimatedCost: subscription?.planType === "CUSTOM" ? monthlyBills : 0,
@@ -259,28 +283,61 @@ router.get("/stats", async (req, res) => {
       monthlyUsage: [],
     });
   } catch (error) {
-    res.status(500).json({ error: "Failed to fetch statistics" });
+    console.error("Get stats error:", error);
+    
+    if (error.message === "NO_TOKEN" || error.message === "INVALID_TOKEN") {
+      return res.status(401).json({
+        error: "Unauthorized",
+        message: "Authentication required",
+      });
+    }
+    
+    res.status(500).json({ 
+      error: "Failed to fetch statistics",
+      message: error.message 
+    });
   }
 });
+
+// POST /api/subscriptions/cancel - Cancel subscription
 router.post("/cancel", async (req, res) => {
   try {
     const user = await getUserFromToken(req);
+    
     const subscription = await prisma.subscription.findFirst({
       where: { userId: user.id, status: "ACTIVE" },
     });
 
     if (!subscription) {
-      return res.status(404).json({ error: "No active subscription" });
+      return res.status(404).json({ 
+        error: "No active subscription",
+        message: "You do not have an active subscription to cancel"
+      });
     }
 
     await prisma.subscription.update({
       where: { id: subscription.id },
-      data: { status: "CANCELLED", endDate: new Date() },
+      data: { 
+        status: "CANCELLED", 
+        endDate: new Date() 
+      },
     });
 
     res.json({ message: "Subscription cancelled successfully" });
   } catch (error) {
-    res.status(500).json({ error: "Failed to cancel subscription" });
+    console.error("Cancel subscription error:", error);
+    
+    if (error.message === "NO_TOKEN" || error.message === "INVALID_TOKEN") {
+      return res.status(401).json({
+        error: "Unauthorized",
+        message: "Authentication required",
+      });
+    }
+    
+    res.status(500).json({ 
+      error: "Failed to cancel subscription",
+      message: error.message 
+    });
   }
 });
 
