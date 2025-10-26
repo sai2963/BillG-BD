@@ -11,10 +11,6 @@ const prisma = new PrismaClient();
 const productRoutes = require('./routes/products');
 const billRoutes = require('./routes/bills');
 const customerRoutes = require('./routes/customers');
-const subscriptionRoutes = require('./routes/subscription')
-
-// Import cron jobs
-const { initializeCronJobs } = require('./cron/billing');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -32,7 +28,7 @@ app.use(limiter);
 
 // CORS configuration
 const corsOptions = {
-  origin: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : ['http://localhost:3000', 'http://localhost:5173', 'https://bill-g.vercel.app'], 
+  origin: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : ['http://localhost:3000', 'http://localhost:5173' , 'https://bill-g.vercel.app'], 
   credentials: true,
   optionsSuccessStatus: 200
 };
@@ -52,7 +48,6 @@ app.use((req, res, next) => {
 app.use('/api/products', productRoutes);
 app.use('/api/bills', billRoutes);
 app.use('/api/customers', customerRoutes);
-app.use('/api/subscriptions', subscriptionRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -106,9 +101,6 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Initialize cron jobs for automated billing
-initializeCronJobs();
-
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('Received SIGINT. Graceful shutdown...');
@@ -128,5 +120,3 @@ app.listen(PORT, () => {
   console.log(`Environment: ${process.env.NODE_ENV}`);
   console.log(`Health check: http://localhost:${PORT}/api/health`);
 });
-
-module.exports = app;
