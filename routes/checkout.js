@@ -12,7 +12,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
  */
 router.post("/", async (req, res) => {
   try {
-    const { cartItems } = req.body;
+    const { cartItems ,billId } = req.body;
 
     // ✅ Validate input
     if (!cartItems || !Array.isArray(cartItems) || cartItems.length === 0) {
