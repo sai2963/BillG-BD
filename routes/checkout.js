@@ -44,7 +44,12 @@ router.post("/", async (req, res) => {
         };
       }),
 
-      success_url: `${process.env.CLIENT_URL}/success`,
+
+      metadata: {
+        billId: billId,   
+      },
+
+      success_url: `${process.env.CLIENT_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.CLIENT_URL}/cancel`,
     });
 
