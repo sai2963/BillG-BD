@@ -11,7 +11,7 @@ const prisma = new PrismaClient();
 const productRoutes = require('./routes/products');
 const billRoutes = require('./routes/bills');
 const customerRoutes = require('./routes/customers');
-
+const checkoutRoutes = require('./routes/checkout');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -48,6 +48,8 @@ app.use((req, res, next) => {
 app.use('/api/products', productRoutes);
 app.use('/api/bills', billRoutes);
 app.use('/api/customers', customerRoutes);
+app.use('/api/checkout' , checkoutRoutes);
+
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
