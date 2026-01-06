@@ -4,7 +4,7 @@ const Stripe = require("stripe");
 const router = express.Router();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-router.post("/", (req, res) => {
+router.post("/", async (req, res) => {
   const sig = req.headers["stripe-signature"];
 
   let event;
@@ -20,6 +20,17 @@ router.post("/", (req, res) => {
 
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
+    const billId = session.metadata.billId;
+
+    await prisma.bill.update({
+    where: { id: billId },
+    data: {
+      paymentStatus: "PAID",
+      transactionId: session.payment_intent,
+      paidAt: new Date()
+    }
+  });
+
 
     console.log("💰 Payment Successful");
     console.log("Transaction ID:", session.payment_intent);
