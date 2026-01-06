@@ -277,7 +277,7 @@ router.post('/', [
           discountAmount,
           finalAmount,
           paymentMethod,
-          paymentStatus,
+          paymentStatus :"PAID",
           items: {
             create: billItems
           }
