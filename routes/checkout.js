@@ -1,5 +1,5 @@
 const express = require("express");
-const Stripe = require("stripe");   
+const Stripe = require("stripe");
 const router = express.Router();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
@@ -17,7 +17,7 @@ router.post("/", async (req, res) => {
           product_data: {
             name: item.name,
           },
-          unit_amount: item.price * 100, // Stripe uses paise
+          unit_amount: item.price * 100,
         },
         quantity: item.qty,
       })),
