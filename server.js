@@ -35,7 +35,11 @@
   };
   app.use(cors(corsOptions));
 
-  app.use('/api/webhook', express.raw({ type: 'application/json' }));
+  app.post(
+  '/api/webhook',
+  express.raw({ type: 'application/json' }),
+  webhookRoutes
+);
 
   // Body parsing middleware
   app.use(express.json({ limit: '10mb' }));
@@ -52,7 +56,7 @@
   app.use('/api/bills', billRoutes);
   app.use('/api/customers', customerRoutes);
   app.use('/api/checkout' , checkoutRoutes);
-  app.use('/api/webhook' , webhookRoutes)
+  
 
   // Health check endpoint
   app.get('/api/health', (req, res) => {
