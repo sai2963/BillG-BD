@@ -72,6 +72,10 @@ model Bill {
   // Payment Info
   paymentStatus   PaymentStatus @default(PENDING)
   paymentMethod   PaymentMethod @default(CASH)
+
+   transactionId   String?      // Stripe PaymentIntent ID
+  paidAt          DateTime?     // When payment succeeded
+
   
   // Bill Items
   items BillItem[]
