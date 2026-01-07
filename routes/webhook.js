@@ -33,8 +33,8 @@ router.post("/", async (req, res) => {
         paymentStatus: "PAID",
         transactionId: session.payment_intent,
         paidAt: new Date(),
-        paymentMethod: "CARD"
-      }
+        paymentMethod: "CARD",
+      },
     });
 
     console.log("💰 Payment Successful");
