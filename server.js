@@ -14,6 +14,7 @@ const customerRoutes = require("./routes/customers");
 const checkoutRoutes = require("./routes/checkout");
 const webhookRoutes = require("./routes/webhook");
 const zoomRoutes = require('./routes/zoom');
+const hmsRoutes = require('./routes/hmsRoute')
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -76,6 +77,7 @@ app.use("/api/bills", billRoutes);
 app.use("/api/customers", customerRoutes);
 app.use("/api/checkout", checkoutRoutes);
 app.use("/api/zoom", zoomRoutes);
+app.use("/api/hms", hmsRoutes);
 
 /* =======================
    HEALTH CHECK
